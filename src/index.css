@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Inter, 'Segoe UI', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #1f2a3a;
+  background: #f7f9ff;
+  --brand-cyan: #37d0ff;
+  --brand-blue: #467bfd;
+  --brand-violet: #5d63fd;
+  --brand-pink: #d867ff;
+  --brand-purple: #b01cf5;
+  --brand-navy: #1f2a3a;
+  --brand-slate: #f5f7ff;
+  --brand-soft: rgba(70, 123, 253, 0.16);
+  --brand-deep: rgba(31, 42, 58, 0.08);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html {
+  background: #f7f9ff;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: radial-gradient(circle at top left, #edf9ff 0%, #f7f9ff 24%, #f2edff 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
