@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { seedDeals } from './data/deals'
 import { supabase } from './lib/supabase'
 import orkestroLogo from './assets/Orkestro.svg'
+import Login from './Login'
+import { getUserSession, signOut } from './lib/auth'
 
 const stages = [
   'Lead',
@@ -26,11 +28,10 @@ const stageStyles = {
 }
 
 const quickActions = [
-  { key: 'contact', label: 'Contacts', icon: '👤', hint: 'Add contact context' },
-  { key: 'account', label: 'Accounts', icon: '🏢', hint: 'Add account context' },
-  { key: 'task', label: 'Tasks', icon: '✓', hint: 'Capture next task' },
-  { key: 'note', label: 'Notes', icon: '✎', hint: 'Capture notes' },
-  { key: 'meeting', label: 'Meetings', icon: '📅', hint: 'Log meeting' },
+  { key: 'contact', label: 'Contacts', icon: '👤', hint: 'Add contact' },
+  { key: 'account', label: 'Accounts', icon: '🏢', hint: 'Add account' },
+  { key: 'task', label: 'Tasks', icon: '✓', hint: 'Create task' },
+  { key: 'note', label: 'Notes', icon: '✎', hint: 'Add note' },
   { key: 'product', label: 'Products', icon: '📦', hint: 'Add product interest' },
 ]
 
@@ -50,6 +51,8 @@ function normalizeDeal(deal) {
   return {
     ...deal,
     aud_value: Number(deal.aud_value ?? 0),
+    is_archived: Boolean(deal.is_archived),
+    archived_at: deal.archived_at ?? null,
     deal_updates: Array.isArray(deal.deal_updates)
       ? deal.deal_updates.map((update) => ({
           id: update.id ?? `update-${Date.now()}-${Math.random()}`,
@@ -62,66 +65,126 @@ function normalizeDeal(deal) {
 }
 
 function App() {
-  const [deals, setDeals] = useState(seedDeals)
+  const [currentUser, setCurrentUser] = useState(getUserSession())
+  const [forceHome, setForceHome] = useState(false)
+
+  if (!currentUser) {
+    return (
+      <Login
+        onSuccess={(u) => {
+          setCurrentUser(u)
+          setForceHome(true)
+        }}
+      />
+    )
+  }
+  const [deals, setDeals] = useState([])
+  const [archivedDeals, setArchivedDeals] = useState([])
   const [draggedDealId, setDraggedDealId] = useState(null)
-  const [selectedDealId, setSelectedDealId] = useState(seedDeals[0]?.id ?? null)
+  const [selectedDealId, setSelectedDealId] = useState(null)
   const [isEditing, setIsEditing] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
   const [draftDeal, setDraftDeal] = useState(null)
+  const [createMode, setCreateMode] = useState('deal')
+  const [draftEntity, setDraftEntity] = useState(null)
+  const [contacts, setContacts] = useState([])
+  const [accounts, setAccounts] = useState([])
+  const [tasks, setTasks] = useState([])
+  const [notes, setNotes] = useState([])
   const [searchTerm, setSearchTerm] = useState('')
   const [stageFilter, setStageFilter] = useState('All')
   const [newUpdateText, setNewUpdateText] = useState('')
+  const [showArchive, setShowArchive] = useState(false)
 
   const selectedDeal = deals.find((deal) => deal.id === selectedDealId) ?? null
 
   useEffect(() => {
-    if (!supabase) {
-      return undefined
-    }
+    if (supabase) {
+      async function loadDeals() {
+        const { data, error } = await supabase
+          .from('deals')
+          .select('*')
+          .order('created_at', { ascending: true })
 
-    async function loadDeals() {
-      const { data, error } = await supabase
-        .from('deals')
-        .select('*')
-        .order('created_at', { ascending: true })
+        if (!error && data) {
+          const nextDeals = data.map(normalizeDeal)
+          const activeDeals = nextDeals.filter((deal) => !deal.is_archived)
+          const archived = nextDeals.filter((deal) => deal.is_archived)
 
-      if (!error && data) {
-        setDeals(data.map(normalizeDeal))
+          setDeals(activeDeals)
+          setArchivedDeals(archived)
+          if (forceHome) {
+            setSelectedDealId(null)
+            setForceHome(false)
+          } else {
+            setSelectedDealId((current) => current ?? activeDeals[0]?.id ?? null)
+          }
+        }
+      }
+
+      loadDeals()
+
+      const channel = supabase
+        .channel('crm-deals-realtime')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'deals' },
+          (payload) => {
+            const normalized = normalizeDeal(payload.new ?? payload.old)
+
+            if (payload.eventType === 'INSERT') {
+              setDeals((current) =>
+                normalized.is_archived ? current : [normalized, ...current],
+              )
+              setArchivedDeals((current) =>
+                normalized.is_archived ? [normalized, ...current] : current,
+              )
+            }
+
+            if (payload.eventType === 'UPDATE') {
+              setDeals((current) =>
+                normalized.is_archived
+                  ? current.filter((deal) => deal.id !== normalized.id)
+                  : current.some((deal) => deal.id === normalized.id)
+                    ? current.map((deal) =>
+                        deal.id === normalized.id ? normalized : deal,
+                      )
+                    : [normalized, ...current],
+              )
+
+              setArchivedDeals((current) => {
+                const next = current.filter((deal) => deal.id !== normalized.id)
+                return normalized.is_archived ? [normalized, ...next] : next
+              })
+            }
+
+            if (payload.eventType === 'DELETE') {
+              setDeals((current) =>
+                current.filter((deal) => deal.id !== payload.old.id),
+              )
+              setArchivedDeals((current) =>
+                current.filter((deal) => deal.id !== payload.old.id),
+              )
+            }
+          },
+        )
+        .subscribe()
+
+      return () => {
+        supabase.removeChannel(channel)
       }
     }
 
-    loadDeals()
-
-    const channel = supabase
-      .channel('crm-deals-realtime')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'deals' },
-        (payload) => {
-          if (payload.eventType === 'INSERT') {
-            setDeals((current) => [...current, normalizeDeal(payload.new)])
-          }
-
-          if (payload.eventType === 'UPDATE') {
-            setDeals((current) =>
-              current.map((deal) =>
-                deal.id === payload.new.id ? normalizeDeal(payload.new) : deal,
-              ),
-            )
-          }
-
-          if (payload.eventType === 'DELETE') {
-            setDeals((current) =>
-              current.filter((deal) => deal.id !== payload.old.id),
-            )
-          }
-        },
-      )
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(channel)
+    const seeded = seedDeals.map(normalizeDeal)
+    setDeals(seeded)
+    setArchivedDeals([])
+    if (forceHome) {
+      setSelectedDealId(null)
+      setForceHome(false)
+    } else {
+      setSelectedDealId((current) => current ?? seeded[0]?.id ?? null)
     }
+    return undefined
   }, [])
 
   const pipelineTotal = useMemo(
@@ -190,27 +253,125 @@ function App() {
     setIsEditing(true)
   }
 
-  const startCreating = (prefill = {}) => {
-    const today = new Date().toISOString().slice(0, 10)
-    const newDealDraft = {
-      id: crypto.randomUUID ? crypto.randomUUID() : `deal-${Date.now()}`,
-      name: '',
-      aud_value: 0,
-      stage: 'Lead',
-      owner: '',
-      account_or_partner: '',
-      contact_name: '',
-      expected_close_date: today,
-      lead_source: '',
-      probability: 0,
-      next_activity: '',
-      created_at: new Date().toISOString(),
-      deal_updates: [],
-      ...prefill,
+  const startCreating = (prefill = {}, mode = 'deal') => {
+    setCreateMode(mode)
+    setIsCreating(true)
+    if (mode === 'deal') {
+      const today = new Date().toISOString().slice(0, 10)
+      const newDealDraft = {
+        id: crypto.randomUUID ? crypto.randomUUID() : `deal-${Date.now()}`,
+        name: '',
+        aud_value: 0,
+        stage: 'Lead',
+        owner: '',
+        account_or_partner: '',
+        contact_name: '',
+        expected_close_date: today,
+        lead_source: '',
+        probability: 0,
+        next_activity: '',
+        created_at: new Date().toISOString(),
+        deal_updates: [],
+        ...prefill,
+      }
+
+      setDraftDeal(newDealDraft)
+      setDraftEntity(null)
+    } else if (mode === 'contact') {
+      setDraftEntity({ id: `contact-${Date.now()}`, name: prefill.contact_name || '', email: prefill.email || '', phone: prefill.phone || '', account: prefill.account_or_partner || '' })
+      setDraftDeal(null)
+    } else if (mode === 'account') {
+      setDraftEntity({ id: `account-${Date.now()}`, name: prefill.account_or_partner || '', website: prefill.website || '' })
+      setDraftDeal(null)
+    } else if (mode === 'task') {
+      setDraftEntity({ id: `task-${Date.now()}`, title: prefill.title || '', due: prefill.due || new Date().toISOString().slice(0,10), note: prefill.note || '', linkedDealId: prefill.linkedDealId || null })
+      setDraftDeal(null)
+    } else if (mode === 'note') {
+      setDraftEntity({ id: `note-${Date.now()}`, text: prefill.text || '', linkedDealId: prefill.linkedDealId || null })
+      setDraftDeal(null)
+    } else {
+      setDraftEntity(null)
+      setDraftDeal(null)
+    }
+  }
+
+  const updateDraftEntityField = (field, value) => {
+    setDraftEntity((d) => ({ ...(d||{}), [field]: value }))
+  }
+
+  const createEntity = async () => {
+    if (!createMode) return
+    if (createMode === 'deal') return createDeal()
+
+    // contact/account/task/note
+    try {
+      if (supabase) {
+        if (createMode === 'contact') {
+          // try insert into `contacts` table if exists
+          const payload = { id: draftEntity.id, name: draftEntity.name, email: draftEntity.email, phone: draftEntity.phone, account: draftEntity.account, created_at: new Date().toISOString() }
+          const { error } = await supabase.from('contacts').insert([payload])
+          if (!error) {
+            setContacts((c) => [payload, ...c])
+            setIsCreating(false)
+            setDraftEntity(null)
+            return
+          }
+        }
+
+        if (createMode === 'account') {
+          const payload = { id: draftEntity.id, name: draftEntity.name, website: draftEntity.website, created_at: new Date().toISOString() }
+          const { error } = await supabase.from('accounts').insert([payload])
+          if (!error) {
+            setAccounts((a) => [payload, ...a])
+            setIsCreating(false)
+            setDraftEntity(null)
+            return
+          }
+        }
+
+        if (createMode === 'task') {
+          const payload = { id: draftEntity.id, title: draftEntity.title, due: draftEntity.due, note: draftEntity.note, linked_deal_id: draftEntity.linkedDealId, created_at: new Date().toISOString() }
+          const { error } = await supabase.from('tasks').insert([payload])
+          if (!error) {
+            setTasks((t) => [payload, ...t])
+            setIsCreating(false)
+            setDraftEntity(null)
+            return
+          }
+        }
+
+        if (createMode === 'note') {
+          const payload = { id: draftEntity.id, text: draftEntity.text, linked_deal_id: draftEntity.linkedDealId, created_at: new Date().toISOString() }
+          const { error } = await supabase.from('notes').insert([payload])
+          if (!error) {
+            setNotes((n) => [payload, ...n])
+            setIsCreating(false)
+            setDraftEntity(null)
+            return
+          }
+        }
+      }
+    } catch (err) {
+      // ignore supabase errors and fallback to local
+      console.warn('Insert to supabase failed (fallback to local):', err)
     }
 
-    setDraftDeal(newDealDraft)
-    setIsCreating(true)
+    // Fallback to local state
+    if (createMode === 'contact') {
+      setContacts((c) => [{ ...draftEntity, created_at: new Date().toISOString() }, ...c])
+    }
+    if (createMode === 'account') {
+      setAccounts((a) => [{ ...draftEntity, created_at: new Date().toISOString() }, ...a])
+    }
+    if (createMode === 'task') {
+      setTasks((t) => [{ ...draftEntity, created_at: new Date().toISOString() }, ...t])
+    }
+    if (createMode === 'note') {
+      setNotes((n) => [{ ...draftEntity, created_at: new Date().toISOString() }, ...n])
+    }
+
+    setIsCreating(false)
+    setDraftEntity(null)
   }
 
   const updateDraftField = (field, value) => {
@@ -220,15 +381,87 @@ function App() {
     }))
   }
 
+  const archiveDeal = async (dealId) => {
+    if (!dealId) {
+      return
+    }
+
+    const archivedDeal = deals.find((deal) => deal.id === dealId)
+    if (!archivedDeal) {
+      return
+    }
+
+    const nextVersion = normalizeDeal({
+      ...archivedDeal,
+      is_archived: true,
+      archived_at: new Date().toISOString(),
+    })
+
+    setDeals((current) => current.filter((deal) => deal.id !== dealId))
+    setArchivedDeals((current) => [nextVersion, ...current])
+    setSelectedDealId(null)
+    setShowArchive(false)
+
+    if (supabase) {
+      await supabase
+        .from('deals')
+        .update({
+          is_archived: true,
+          archived_at: nextVersion.archived_at,
+        })
+        .eq('id', dealId)
+    }
+  }
+
+  const restoreArchivedDeal = async (dealId) => {
+    const archivedDeal = archivedDeals.find((deal) => deal.id === dealId)
+    if (!archivedDeal) {
+      return
+    }
+
+    const restoredDeal = normalizeDeal({
+      ...archivedDeal,
+      is_archived: false,
+      archived_at: null,
+    })
+
+    setArchivedDeals((current) => current.filter((deal) => deal.id !== dealId))
+    setDeals((current) => [restoredDeal, ...current])
+    setSelectedDealId(dealId)
+    setShowArchive(false)
+
+    if (supabase) {
+      await supabase
+        .from('deals')
+        .update({
+          is_archived: false,
+          archived_at: null,
+        })
+        .eq('id', dealId)
+    }
+  }
+
+  const deleteArchivedDeal = async (dealId) => {
+    setArchivedDeals((current) => current.filter((deal) => deal.id !== dealId))
+    if (selectedDealId === dealId) {
+      setSelectedDealId(null)
+    }
+
+    if (supabase) {
+      await supabase.from('deals').delete().eq('id', dealId)
+    }
+  }
+
   const addDealUpdate = async () => {
     if (!selectedDeal || !newUpdateText.trim()) {
       return
     }
 
     const timestamp = new Date().toISOString()
+    const authorName = currentUser?.name ?? currentUser?.email ?? 'Current user'
     const nextUpdate = {
       id: crypto.randomUUID ? crypto.randomUUID() : `update-${Date.now()}`,
-      author: 'Current user',
+      author: authorName,
       message: newUpdateText.trim(),
       created_at: timestamp,
     }
@@ -250,6 +483,8 @@ function App() {
           .from('deals')
           .update({
             next_activity: updatedDeal.next_activity,
+            is_archived: false,
+            archived_at: null,
             deal_updates: updatedDeal.deal_updates,
           })
           .eq('id', selectedDeal.id)
@@ -289,6 +524,8 @@ function App() {
           lead_source: normalizedDeal.lead_source,
           probability: normalizedDeal.probability,
           next_activity: normalizedDeal.next_activity,
+          is_archived: false,
+          archived_at: null,
           deal_updates: normalizedDeal.deal_updates,
         })
         .eq('id', selectedDeal.id)
@@ -328,6 +565,8 @@ function App() {
           probability: normalizedDeal.probability,
           next_activity: normalizedDeal.next_activity,
           created_at: normalizedDeal.created_at,
+          is_archived: false,
+          archived_at: null,
           deal_updates: normalizedDeal.deal_updates,
         },
       ])
@@ -362,18 +601,16 @@ function App() {
                 onClick={() => {
                   const prefill =
                     action.key === 'contact'
-                      ? { contact_name: 'New contact' }
+                      ? { contact_name: 'New contact', email: '' }
                       : action.key === 'account'
                         ? { account_or_partner: 'New account' }
                         : action.key === 'task'
-                          ? { next_activity: 'Follow up task' }
-                          : action.key === 'meeting'
-                            ? { next_activity: 'Schedule meeting' }
-                            : action.key === 'product'
-                              ? { lead_source: 'Product interest' }
-                              : { next_activity: 'Add note' }
+                          ? { title: 'New task', note: '' }
+                          : action.key === 'product'
+                            ? { lead_source: 'Product interest' }
+                            : { }
 
-                  startCreating(prefill)
+                  startCreating(prefill, action.key)
                 }}
                 className="group flex flex-col items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2 py-3 text-center transition hover:border-[#5d63fd] hover:bg-[#f0ecff] hover:text-[#467bfd]"
               >
@@ -402,6 +639,16 @@ function App() {
             >
               + New deal
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowArchive((current) => !current)
+                setSelectedDealId(null)
+              }}
+              className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Archive ({archivedDeals.length})
+            </button>
             <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
               {deals.length} deals
             </div>
@@ -409,6 +656,19 @@ function App() {
               style={{ background: 'linear-gradient(135deg, #1f2a3a 0%, #2d7df7 36%, #6a5fe8 100%)' }}
             >
               {currencyFormatter.format(pipelineTotal)} pipeline
+            </div>
+            <div className="ml-3 flex items-center gap-3">
+              <div className="text-sm font-medium text-slate-700">{currentUser?.name ?? currentUser?.email}</div>
+              <button
+                type="button"
+                onClick={async () => {
+                  await signOut()
+                  setCurrentUser(null)
+                }}
+                className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Sign out
+              </button>
             </div>
           </div>
             </header>
@@ -565,7 +825,7 @@ function App() {
                 </label>
               </div>
 
-              <div className="mt-5 flex justify-end gap-3">
+                <div className="mt-5 flex justify-end gap-3">
                 <button
                   type="button"
                   onClick={() => {
@@ -731,7 +991,60 @@ function App() {
           </div>
         )}
 
-            {selectedDeal ? (
+            {showArchive ? (
+              <aside className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                      Archive
+                    </p>
+                    <h2 className="mt-1 text-2xl font-bold text-slate-900">Archived deals</h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowArchive(false)}
+                    className="rounded-full border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                  >
+                    Back to pipeline
+                  </button>
+                </div>
+
+                {archivedDeals.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">
+                    No archived deals yet.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {archivedDeals.map((deal) => (
+                      <div key={deal.id} className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <div className="text-base font-semibold text-slate-900">{deal.name}</div>
+                          <div className="mt-1 text-sm text-slate-500">
+                            {deal.account_or_partner || 'No account'} · {deal.owner || 'Unassigned'}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => restoreArchivedDeal(deal.id)}
+                            className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                          >
+                            Restore
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteArchivedDeal(deal.id)}
+                            className="rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-sm font-medium text-red-700 transition hover:bg-red-100"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </aside>
+            ) : selectedDeal ? (
               <aside className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
@@ -750,6 +1063,13 @@ function App() {
               style={{ background: brandGradient }}
                     >
                       Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => archiveDeal(selectedDeal.id)}
+                      className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-700 transition hover:bg-amber-100"
+                    >
+                      Archive deal
                     </button>
                     <button
                       type="button"

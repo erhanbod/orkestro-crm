@@ -20,6 +20,9 @@ create table if not exists public.deals (
   lead_source text default 'Unknown',
   probability integer not null default 0 check (probability between 0 and 100),
   next_activity text,
+  is_archived boolean not null default false,
+  archived_at timestamptz,
+  deal_updates jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -80,12 +83,14 @@ insert into public.deals (
   expected_close_date,
   lead_source,
   probability,
-  next_activity
+  next_activity,
+  is_archived,
+  deal_updates
 )
 values
-  ('Northstar Analytics', 42000, 'Lead', 'Maya', 'Northstar', 'Olivia Chen', '2026-10-15', 'Website inquiry', 25, 'Discovery call with CFO'),
-  ('Apex Logistics', 65000, 'Contact Made', 'Leo', 'Apex Group', 'Marcus Bell', '2026-10-28', 'Outbound campaign', 45, 'Demo for operations team'),
-  ('Bluepeak Studio', 31000, 'Presentation', 'Aisha', 'Bluepeak', 'Sana Kim', '2026-11-08', 'Referral', 60, 'Send proposal and pricing deck'),
-  ('Harbor Health', 92000, 'Negotiation', 'Dylan', 'Harbor', 'Nina Patel', '2026-11-18', 'Partner referral', 75, 'Negotiate contract terms'),
-  ('Summit Energy', 138000, 'Verbal Won', 'Priya', 'Summit Renewables', 'Aaron Cole', '2026-12-02', 'Conference', 90, 'Finalize onboarding and kickoff plan')
+  ('Northstar Analytics', 42000, 'Lead', 'Maya', 'Northstar', 'Olivia Chen', '2026-10-15', 'Website inquiry', 25, 'Discovery call with CFO', false, '[]'::jsonb),
+  ('Apex Logistics', 65000, 'Contact Made', 'Leo', 'Apex Group', 'Marcus Bell', '2026-10-28', 'Outbound campaign', 45, 'Demo for operations team', false, '[]'::jsonb),
+  ('Bluepeak Studio', 31000, 'Presentation', 'Aisha', 'Bluepeak', 'Sana Kim', '2026-11-08', 'Referral', 60, 'Send proposal and pricing deck', false, '[]'::jsonb),
+  ('Harbor Health', 92000, 'Negotiation', 'Dylan', 'Harbor', 'Nina Patel', '2026-11-18', 'Partner referral', 75, 'Negotiate contract terms', false, '[]'::jsonb),
+  ('Summit Energy', 138000, 'Verbal Won', 'Priya', 'Summit Renewables', 'Aaron Cole', '2026-12-02', 'Conference', 90, 'Finalize onboarding and kickoff plan', false, '[]'::jsonb)
 on conflict do nothing;
